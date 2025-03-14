@@ -215,20 +215,112 @@ void handleBrakeCommand() {
 
 void handleStatusCommand() {
   char* subCmd = strtok_r(NULL, ",", &saveptr);
+  uint16_t status = motor.motorStats(); // Get raw status word
+  
   if (!subCmd) {
-    uint16_t status = motor.motorStats();
-    sendUDPMessage(String(status) + "|" + String(status));
+    // Return both raw status and hex formatted status
+    sendUDPMessage("STATUS:" + String(status) + "|0x" + String(status, HEX));
     return;
   }
 
   if (strcmp(subCmd, "DETAIL") == 0) {
-    JMCMotor::MotorStatus status = motor.getDetailedStatus();
-    String details = "Status:\n";
-    details += "Running: " + String(status.motorRunning) + "\n";
-    details += "Error: " + String(status.errorStatus) + "\n";
-    details += "Position reached: " + String(status.targetReached) + "\n";
-    details += "Homing complete: " + String(status.homingComplete);
+    JMCMotor::MotorStatus stat = motor.getDetailedStatus();
+    
+    // Create human-readable status report
+    String details = "Motor Status (0x" + String(status, HEX) + "):\n";
+    
+    // Operation status
+    details += "Operation: ";
+    if (stat.motorRunning) details += "RUNNING";
+    else if (stat.motorHalt) details += "HALTED";
+    else if (stat.motorEnabled) details += "ENABLED";
+    else details += "DISABLED";
+    details += "\n";
+    
+    // Error and warning status
+    if (stat.errorStatus) details += "ERROR ACTIVE\n";
+    if (stat.warning) details += "WARNING ACTIVE\n";
+    if (stat.overPositionError) details += "POSITION ERROR\n";
+    
+    // Position status
+    details += "Position: ";
+    if (stat.targetReached) details += "TARGET REACHED";
+    else details += "IN MOTION";
+    details += "\n";
+    
+    // Limit switches
+    if (stat.cwLimit) details += "CW LIMIT ACTIVE\n";
+    if (stat.ccwLimit) details += "CCW LIMIT ACTIVE\n";
+    
+    // Homing status
+    if (stat.homingComplete) details += "HOMING COMPLETE\n";
+    if (stat.swMechanicalOrigin) details += "AT MECHANICAL ORIGIN\n";
+    
+    // Other flags
+    if (stat.quickStopActive) details += "QUICK STOP ACTIVE\n";
+    if (stat.readyToInit) details += "READY TO INITIALIZE\n";
+    if (stat.initComplete) details += "INITIALIZATION COMPLETE\n";
+    if (stat.driveWorking) details += "DRIVE WORKING\n";
+    
+    // Add current position and velocity
+    details += "Current Position: " + String(motor.getCurrentPosition()) + "\n";
+    details += "Current Velocity: " + String(motor.getCurrentVelocity());
+    
     sendUDPMessage(details);
+  }
+  else if (strcmp(subCmd, "RAW") == 0) {
+    // Return just the raw status word in both decimal and hex
+    sendUDPMessage("RAW_STATUS:" + String(status) + "|0x" + String(status, HEX));
+  }
+  else if (strcmp(subCmd, "FLAGS") == 0) {
+    // Return status with individual bits explained
+    JMCMotor::MotorStatus stat = motor.getDetailedStatus();
+    String flagDetails = "Status Flags (0x" + String(status, HEX) + "):\n";
+    
+    // Add each flag with its state
+    flagDetails += "Bit 0 (Ready to init): " + String(stat.readyToInit ? "1" : "0") + "\n";
+    flagDetails += "Bit 1 (Init complete): " + String(stat.initComplete ? "1" : "0") + "\n";
+    flagDetails += "Bit 2 (Motor enabled): " + String(stat.motorEnabled ? "1" : "0") + "\n";
+    flagDetails += "Bit 3 (Error status): " + String(stat.errorStatus ? "1" : "0") + "\n";
+    flagDetails += "Bit 4 (Drive working): " + String(stat.driveWorking ? "1" : "0") + "\n";
+    flagDetails += "Bit 5 (Quick stop active): " + String(stat.quickStopActive ? "1" : "0") + "\n";
+    flagDetails += "Bit 6 (Init state): " + String(stat.initState ? "1" : "0") + "\n";
+    flagDetails += "Bit 7 (Warning): " + String(stat.warning ? "1" : "0") + "\n";
+    flagDetails += "Bit 8 (Motor halt): " + String(stat.motorHalt ? "1" : "0") + "\n";
+    flagDetails += "Bit 9 (Motor running): " + String(stat.motorRunning ? "1" : "0") + "\n";
+    flagDetails += "Bit 10 (Target reached): " + String(stat.targetReached ? "1" : "0") + "\n";
+    flagDetails += "Bit 11 (SW mechanical origin): " + String(stat.swMechanicalOrigin ? "1" : "0") + "\n";
+    flagDetails += "Bit 12 (Homing complete): " + String(stat.homingComplete ? "1" : "0") + "\n";
+    flagDetails += "Bit 13 (Over position error): " + String(stat.overPositionError ? "1" : "0") + "\n";
+    flagDetails += "Bit 14 (CW limit): " + String(stat.cwLimit ? "1" : "0") + "\n";
+    flagDetails += "Bit 15 (CCW limit): " + String(stat.ccwLimit ? "1" : "0");
+    
+    sendUDPMessage(flagDetails);
+  }
+  else if (strcmp(subCmd, "COMPACT") == 0) {
+    // Create a compact but informative status string
+    JMCMotor::MotorStatus stat = motor.getDetailedStatus();
+    String compactStatus = "M" + String(MOTOR_ID) + ":";
+    
+    // Basic operation state
+    if (stat.errorStatus) compactStatus += "E";
+    else if (stat.motorRunning) compactStatus += "R";
+    else if (stat.motorHalt) compactStatus += "H";
+    else if (stat.motorEnabled) compactStatus += "S"; // Standby
+    else compactStatus += "D"; // Disabled
+    
+    // Important flags
+    if (stat.warning) compactStatus += "W";
+    if (stat.targetReached) compactStatus += "T";
+    if (stat.homingComplete) compactStatus += "O"; // Origin
+    if (stat.cwLimit) compactStatus += "C";
+    if (stat.ccwLimit) compactStatus += "A";
+    
+    // Position and mode
+    compactStatus += ":" + String(motor.getCurrentPosition());
+    compactStatus += ":" + String(motor.getCurrentMode());
+    
+    sendUDPMessage(compactStatus);
   }
 }
 
@@ -316,11 +408,54 @@ void handleResetCommand() {
 }
 
 void handleInfoCommand() {
-  String info = "Motor Info:\n";
+  uint16_t statusWord = motor.motorStats();
+  JMCMotor::MotorStatus stat = motor.getDetailedStatus();
+  
+  // Get current operation mode as text
+  String modeText;
+  switch(motor.getCurrentMode()) {
+    case JMCMotor::MODE_POSITION:
+      modeText = "Position";
+      break;
+    case JMCMotor::MODE_VELOCITY:
+      modeText = "Velocity";
+      break;
+    case JMCMotor::MODE_HOMING:
+      modeText = "Homing";
+      break;
+    default:
+      modeText = "Unknown";
+  }
+  
+  // Get state as text
+  String stateText;
+  if (stat.errorStatus) stateText = "ERROR";
+  else if (stat.motorRunning) stateText = "RUNNING";
+  else if (stat.motorHalt) stateText = "HALTED";
+  else if (stat.motorEnabled) stateText = "ENABLED";
+  else stateText = "DISABLED";
+  
+  // Format comprehensive info
+  String info = "Motor " + String(MOTOR_ID) + " Info:\n";
+  info += "-------------------\n";
+  info += "Status: " + stateText + " (0x" + String(statusWord, HEX) + ")\n";
+  info += "Mode: " + modeText + " (" + String(motor.getCurrentMode()) + ")\n";
   info += "Position: " + String(motor.getCurrentPosition()) + "\n";
   info += "Velocity: " + String(motor.getCurrentVelocity()) + "\n";
-  info += "Mode: " + String(motor.getCurrentMode()) + "\n";
-  info += "Status: " + String(motor.motorStats());
+  info += "-------------------\n";
+  
+  // Additional status flags
+  if (stat.targetReached) info += "Target Reached: YES\n";
+  if (stat.homingComplete) info += "Homing Complete: YES\n";
+  if (stat.warning) info += "Warning: YES\n";
+  if (stat.cwLimit) info += "CW Limit: ACTIVE\n";
+  if (stat.ccwLimit) info += "CCW Limit: ACTIVE\n";
+  if (stat.quickStopActive) info += "Quick Stop: ACTIVE\n";
+  info += "-------------------\n";
+  
+  // Add config information
+  info += "Default Velocity: " + String(defaultVelocity);
+  
   sendUDPMessage(info);
 }
 
@@ -328,4 +463,7 @@ void sendUDPMessage(const String &message) {
   Udp.beginPacket(remoteServer, remotePort);
   Udp.write(message.c_str());
   Udp.endPacket();
+  
+  // Also print to Serial for debugging
+  Serial.println("UDP>>> " + message);
 }
